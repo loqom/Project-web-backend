@@ -1,8 +1,22 @@
-const {startPipeline:callPythonPipeline }=require("./python.service");
+const {startPipeline:callPythonPipeline }=require("../services/python.service");
 const Session=require("../models/session");
 const Project=require("../models/projects");
+const Problem=require("../models/problem");
 
 const sseClients={};
+// Buffer for callbacks received before the SSE client connects
+const pendingCallbacks={};
+
+// Clean up stale pending callbacks after 10 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const sessionId of Object.keys(pendingCallbacks)) {
+        const entries = pendingCallbacks[sessionId];
+        if (entries.length > 0 && entries[0]._timestamp && now - entries[0]._timestamp > 600000) {
+            delete pendingCallbacks[sessionId];
+        }
+    }
+}, 60000);
 
 const startPipeline=async(req,res)=>{
     try{
@@ -26,19 +40,6 @@ const startPipeline=async(req,res)=>{
     }
 };
 
-//function 2
-
-// 1. get sessionId from req.params
-// 2. check session exists in DB → if not return 404
-// 3. set SSE headers:
-//    - Content-Type: text/event-stream
-//    - Cache-Control: no-cache
-//    - Connection: keep-alive
-// 4. store connection → sseClients[sessionId] = res
-// 5. send initial event → { message: 'connected', sessionId }
-// 6. handle client disconnect:
-//    req.on('close', () => delete sseClients[sessionId])
-
 const streamPipeline=async(req,res)=>{
     try{
         const {sessionId}=req.params;
@@ -50,7 +51,21 @@ const streamPipeline=async(req,res)=>{
         res.setHeader("Cache-Control","no-cache");
         res.setHeader("Connection","keep-alive");
         sseClients[sessionId] = res;
+        // Send initial connected event
         res.write(`data: ${JSON.stringify({ message: "connected", sessionId })}\n\n`);
+        // Flush any buffered callbacks that arrived earlier
+        if(pendingCallbacks[sessionId]){
+            pendingCallbacks[sessionId].forEach(entry => {
+                if(entry.type==='log'){
+                    res.write(`data: ${JSON.stringify(entry.payload)}\n\n`);
+                } else if(entry.type==='completed'){
+                    res.write(`data: ${JSON.stringify(entry.payload)}\n\n`);
+                    // close after sending completed event
+                    res.end();
+                }
+            });
+            delete pendingCallbacks[sessionId];
+        }
         req.on("close", () => {
             delete sseClients[sessionId];
         });
@@ -59,50 +74,14 @@ const streamPipeline=async(req,res)=>{
     }
 }
 
-// function 3 -handle callback
-
-// 1. Get sessionId from req.params
-
-// 2. Destructure from req.body:
-//    agentName, status, message, output, isComplete, projects
-
-// 3. Build agentLog entry:
-//    {
-//      agentName,
-//      status,
-//      message,
-//      output,
-//      finishedAt: new Date()
-//    }
-
-// 4. Push agentLog to Session in MongoDB:
-//    Session.findByIdAndUpdate(sessionId, {
-//      $push: { agentLogs: agentLog }
-//    })
-
-// 5. Check if SSE connection exists:
-//    if(sseClients[sessionId])
-//      push update to frontend:
-//      sseClients[sessionId].write(`data: ${JSON.stringify(agentLog)}\n\n`)
-
-// 6. If isComplete === true:
-//    a. loop through projects array
-//    b. create Project document for each:
-//       { ...project, sessionId, userId: session.userId }
-//    c. collect their _ids
-//    d. update Session:
-//       - push all project _ids into results[]
-//       - set status: 'completed'
-//    e. push final SSE event:
-//       { status: 'completed', message: 'Pipeline finished' }
-//    f. close SSE connection:
-//       sseClients[sessionId].end()
-//    g. delete sseClients[sessionId]
-
-// 7. return { success: true }
-
 const handleCallback=async(req,res)=>{
     try{
+        const expectedKey = process.env.INTERNAL_API_KEY || "buildpath-internal-key-2026";
+        const apiKey = req.headers['x-internal-api-key'];
+        if (expectedKey && apiKey !== expectedKey) {
+            console.warn(`[handleCallback] Unauthorized callback attempt. Expected: ${expectedKey}, Got: ${apiKey}`);
+            return res.status(401).json({ success: false, message: "Unauthorized callback" });
+        }
         const {sessionId}=req.params; 
         const session = await Session.findById(sessionId);
         if (!session) return res.status(404).json({ success: false, message: "Session not found" });
@@ -112,7 +91,10 @@ const handleCallback=async(req,res)=>{
         }
         await Session.findByIdAndUpdate(sessionId, {$push: { agentLogs: agentLog }})
         if(sseClients[sessionId]){
-            sseClients[sessionId].write(`data:${JSON.stringify(agentLog)}\n\n`);
+            sseClients[sessionId].write(`data: ${JSON.stringify(agentLog)}\n\n`);
+        } else {
+            if(!pendingCallbacks[sessionId]) pendingCallbacks[sessionId]=[];
+            pendingCallbacks[sessionId].push({type:'log', payload:agentLog, _timestamp: Date.now()});
         }
         const result=[];
         if ( isComplete == true){
@@ -124,15 +106,54 @@ const handleCallback=async(req,res)=>{
                 });
                 const saved=await project.save();
                 result.push(project._id);
-                
+
+                const problem = new Problem({
+                    title: proj.title,
+                    sector: proj.sector || "DevTools",
+                    difficulty: proj.complexity === "easy" ? "Beginner" : proj.complexity === "medium" ? "Intermediate" : "Advanced",
+                    description: proj.problemStatement,
+                    summary: proj.proposedSolution?.slice(0, 200) || "",
+                    techStack: proj.techStack || [],
+                    mvpRequirements: proj.features?.mvp || [],
+                    stretchGoals: proj.features?.stretch || [],
+                    roadmapWeeks: proj.roadmap?.map((r) => ({
+                        week: r.week,
+                        title: r.title,
+                        description: r.tasks.join(", "),
+                        tasks: r.tasks,
+                    })) || [],
+                    impactScore: proj.matchScore || 0,
+                    verified: true,
+                    isCommunitySubmission: false,
+                });
+                await problem.save();
             }
             await Session.findByIdAndUpdate(sessionId, {
                 $push: { results: { $each: result } },
                 $set:{status: 'completed'}
             });
-            res.write(`data: ${JSON.stringify({ status: "completed", message: "Pipeline finished", sessionId })}\n\n`);
-            sseClients[sessionId].end();
-            delete sseClients[sessionId];
+            const completedPayload = { status: "completed", message: "Pipeline finished", sessionId };
+            if (sseClients[sessionId]) {
+                sseClients[sessionId].write(`data: ${JSON.stringify(completedPayload)}\n\n`);
+                sseClients[sessionId].end();
+                delete sseClients[sessionId];
+            } else {
+                if (!pendingCallbacks[sessionId]) pendingCallbacks[sessionId] = [];
+                pendingCallbacks[sessionId].push({ type: 'completed', payload: completedPayload, _timestamp: Date.now() });
+            }
+        }
+
+        if (status === 'failed') {
+            await Session.findByIdAndUpdate(sessionId, { $set: { status: 'failed' } });
+            const failedPayload = { status: "failed", message: message || "Pipeline failed", sessionId };
+            if (sseClients[sessionId]) {
+                sseClients[sessionId].write(`data: ${JSON.stringify(failedPayload)}\n\n`);
+                sseClients[sessionId].end();
+                delete sseClients[sessionId];
+            } else {
+                if (!pendingCallbacks[sessionId]) pendingCallbacks[sessionId] = [];
+                pendingCallbacks[sessionId].push({ type: 'completed', payload: failedPayload, _timestamp: Date.now() });
+            }
         }
         
         return res.status(200).json({success:true});
@@ -167,15 +188,30 @@ const getPipelineStatus=async(req,res)=>{
 // 5. return { success: true, data: session.results }
 
 
-const getPipelineResult=async(req,res)=>{
-    try{
-        const {sessionId}=req.params;
-        const session=await Session.findById(sessionId).populate('results');;
-        if(!session) return res.status(404).json({success:false,message:"session not found"});
-        if(session.status!=='completed') return res.status(404).json({success:false,message:"pipeline not complete yet"});
-        return res.status(200).json({success:true,data:session.results});
-    }catch(err){
-        res.status(404).json({success:false,message:err.message});
+const getPipelineResult = async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const session = await Session.findById(sessionId).populate('results');
+        if (!session) {
+            return res.status(404).json({ success: false, message: "Session not found" });
+        }
+
+        let projects = session.results || [];
+        if (!projects.length) {
+            projects = await Project.find({ sessionId });
+        }
+
+        if (projects.length > 0) {
+            return res.status(200).json({ success: true, data: projects });
+        }
+
+        if (session.status !== 'completed') {
+            return res.status(400).json({ success: false, message: "Pipeline not complete yet" });
+        }
+
+        return res.status(200).json({ success: true, data: [] });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 };
 

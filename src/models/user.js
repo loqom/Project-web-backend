@@ -6,7 +6,7 @@ const bcrypt=require("bcrypt");
 const userSchema=new mongoose.Schema({
     firstName:{
         type:String,
-        minLength:4,
+        minLength:2,
         required:true,
     },
     lastName:{
@@ -41,7 +41,28 @@ const userSchema=new mongoose.Schema({
         type: String,
         enum: ['placement', 'freelance', 'startup', 'learning'],
     },
-
+    githubHandle: {
+        type: String,
+        trim: true,
+        lowercase: true,
+    },
+    linkedin: {
+        type: String,
+        trim: true,
+    },
+    bio: {
+        type: String,
+        trim: true,
+        maxlength: 600,
+    },
+    avatar: {
+        type: String,
+    },
+    googleId: {
+        type: String,
+        unique: true,
+        sparse: true,
+    },
 },
 {
     timestamps:true,
@@ -50,13 +71,13 @@ const userSchema=new mongoose.Schema({
 
 userSchema.methods.getJWT=async function(){
     const user=this;
-    const token=await jwt.sign({_id:user._id},"Bazooka@123",{expiresIn:"1d"});
+    const token=await jwt.sign({_id:user._id},process.env.JWT_SECRET,{expiresIn:"1d"});
     return token;
 }
 
 userSchema.methods.valPass=async function (pass){
     const user=this;
-    const passVal =bcrypt.compare(pass,user.password);
+    const passVal = await bcrypt.compare(pass,user.password);
     return passVal;
 }
 

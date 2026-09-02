@@ -4,7 +4,7 @@ const User=require("../models/user");
 const isAuth=async(req,res,next)=>{
    try{
         const {token}= req.cookies;
-        const isVal=jwt.verify(token,"Bazooka@123");
+        const isVal=jwt.verify(token,process.env.JWT_SECRET);
         if(!isVal){
             return res.status(401).send("Please login");
         }

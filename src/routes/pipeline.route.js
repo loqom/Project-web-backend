@@ -1,6 +1,6 @@
 const express=require("express");
 const pipelineRouter=express.Router();
-const {startPipeline, streamPipeline,handleCallback,  getPipelineStatus, getPipelineResult}=require("../services/pipeline.controller");
+const {startPipeline, streamPipeline,handleCallback,  getPipelineStatus, getPipelineResult}=require("../controller/pipeline.controller");
 const {isAuth}=require("../middlewares/auth.middleware");
 
 pipelineRouter.post("/start",isAuth,startPipeline);

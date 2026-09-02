@@ -2,7 +2,7 @@ const axios = require("axios")
 const startPipeline = async(sessionId,input)=>{
     try{
         const {techStack, skillLevel, timeAvailable, goal} = input;
-        const response=axios.post(`${process.env.PYTHON_SERVICE_URL}/pipeline/run`,{
+        const response = await axios.post(`${process.env.PYTHON_SERVICE_URL}/pipeline/run`,{
             sessionId, techStack, skillLevel, timeAvailable, goal
         });
         return response.data;
