@@ -18,6 +18,7 @@ const allowedOrigins = [
   'http://127.0.0.1:3000',
   'http://localhost:8000',
   'http://127.0.0.1:8000',
+  'http://localhost:5000',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
@@ -34,6 +35,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
 }));
 
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 app.use(cookieParser());
 app.use(express.json());
 
@@ -46,10 +51,12 @@ app.use('/api/teams',teamRouter);
 
 connectDB().then(()=>{
     console.log("Database connected");
-    app.listen(process.env.PORT || 5000,()=>{
-        console.log("Server started at port 5000")
+    const PORT = process.env.PORT || 3001;
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server started at port ${PORT}`);
     });
 
 }).catch(err=>{
     console.log("Database not connected"+err);
+    process.exit(1);
 })
