@@ -1,0 +1,116 @@
+name: BuildPath Backend CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_RESOURCE_GROUP: buildpath-rg
+  AZURE_CONTAINER_APP: buildpath-backend
+  AZURE_CONTAINER_REGISTRY: ca7fdbb90831acr
+  ACR_LOGIN_SERVER: ca7fdbb90831acr.azurecr.io
+  IMAGE_NAME: buildpath-backend
+  HEALTH_CHECK_URL: https://buildpath-backend.salmonwater-32d8ff10.eastasia.azurecontainerapps.io/health
+
+jobs:
+  validate:
+    name: Validate & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+  build-and-deploy:
+    name: Build, Push & Deploy to Azure
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Deploy Image to Azure Container Apps
+        run: |
+          echo "Deploying image ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} to ${{ env.AZURE_CONTAINER_APP }} in ${{ env.AZURE_RESOURCE_GROUP }}..."
+          az containerapp update \
+            --name ${{ env.AZURE_CONTAINER_APP }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Verify Deployment Health Check
+        run: |
+          echo "Running smoke test on ${{ env.HEALTH_CHECK_URL }}..."
+          max_attempts=30
+          delay=10
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+            echo "Health check attempt $attempt/$max_attempts..."
+            http_code=$(curl -s -o /tmp/health_res.json -w "%{http_code}" "${{ env.HEALTH_CHECK_URL }}" || echo "000")
+            
+            if [ "$http_code" -eq 200 ]; then
+              echo "Health check passed with HTTP 200:"
+              cat /tmp/health_res.json
+              echo ""
+              success=true
+              break
+            else
+              echo "Health check returned HTTP $http_code. Waiting ${delay}s before retry..."
+              sleep $delay
+              attempt=$((attempt + 1))
+            fi
+          done
+
+          if [ "$success" != "true" ]; then
+            echo "ERROR: Deployment health check failed after $max_attempts attempts."
+            exit 1
+          fi
