@@ -1,23 +1,40 @@
-const jwt=require("jsonwebtoken");
-const User=require("../models/user");
+const jwt = require("jsonwebtoken");
+const User = require("../models/user");
 
-const isAuth=async(req,res,next)=>{
-   try{
-        const {token}= req.cookies;
-        const isVal=jwt.verify(token,process.env.JWT_SECRET);
-        if(!isVal){
-            return res.status(401).send("Please login");
-        }
-        const {_id}=isVal;
-        const user=await User.findById(_id);
-        if(!user){
-            throw new Error("User not found");
-        }
-        req.user=user;
-        next();
+const isAuth = async (req, res, next) => {
+  try {
+    const token = req.cookies?.token;
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Please login (No token cookie provided)",
+      });
     }
-    catch(err){
-        res.status(400).send("Error "+err);
+
+    const isVal = jwt.verify(token, process.env.JWT_SECRET);
+    if (!isVal || !isVal._id) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid or expired token",
+      });
     }
+
+    const user = await User.findById(isVal._id);
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({
+      success: false,
+      message: err.message || "Authentication failed",
+    });
+  }
 };
-module.exports={isAuth,};
+
+module.exports = { isAuth };
