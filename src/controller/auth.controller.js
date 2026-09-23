@@ -6,17 +6,19 @@ const { sendWelcomeEmail } = require("../services/email.service")
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID)
 
 const COOKIE_OPTIONS = {
-    expires: new Date(Date.now() + 8 * 36000000),
     httpOnly: true,
     secure: true,
-    sameSite: "none",
+    sameSite: "None",
+    path: "/",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
 const CLEAR_COOKIE_OPTIONS = {
-    expires: new Date(0),
     httpOnly: true,
     secure: true,
-    sameSite: "none",
+    sameSite: "None",
+    path: "/",
+    maxAge: 0,
 };
 
 const register=async (req,res)=>{

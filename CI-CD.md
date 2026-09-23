@@ -9,13 +9,13 @@ The BuildPath backend repository (`Project-web-backend`) uses an automated GitHu
 ```
 Git Push to main
        ↓
-GitHub Actions
+GitHub Actions (Concurrency protected)
        ↓
-Run validation & tests (npm ci, lint, test)
+Validate Code & Syntax (npm ci, recursive syntax checks)
        ↓
-Authenticate with Azure via OIDC (No stored client secrets)
+Authenticate with Azure via OIDC (No stored client secrets/passwords)
        ↓
-Build Docker image tagged with Git SHA (and latest)
+Build Docker image tagged ONLY with immutable Git SHA
        ↓
 Push image to ca7fdbb90831acr.azurecr.io
        ↓
@@ -36,15 +36,21 @@ The workflow authenticates using GitHub Actions OpenID Connect (OIDC) federated 
 
 In your GitHub repository settings (**Settings → Secrets and variables → Actions → New repository secret**), configure:
 
-| Secret Name | Description | Example / Value |
-|-------------|-------------|-----------------|
-| `AZURE_CLIENT_ID` | Application (Client) ID of the Microsoft Entra App Registration | `<app-id-guid>` |
+| Secret Name | Description | Value |
+|-------------|-------------|-------|
+| `AZURE_CLIENT_ID` | Application (Client) ID of the Microsoft Entra App Registration | Generated below |
 | `AZURE_TENANT_ID` | Directory (Tenant) ID of your Azure account | `b7503ed1-1602-4a44-9665-3e560a3516d1` |
 | `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID | `47752be6-a9c4-43f4-9a57-d5471be400c8` |
 
+### Least-Privileged Azure RBAC Permissions
+
+Rather than assigning broad `Contributor` or `Owner` permissions:
+1. **Container Registry**: `AcrPush` strictly scoped to the `ca7fdbb90831acr` resource.
+2. **Container App**: Built-in `Container Apps Contributor` role strictly scoped to the `buildpath-backend` Container App resource.
+
 ### Step-by-Step Azure CLI Setup Commands
 
-Run these commands using the Azure CLI logged into your subscription:
+Run these commands using PowerShell or Bash where `az` is logged in:
 
 ```bash
 # 1. Variables
@@ -55,30 +61,30 @@ RESOURCE_GROUP="buildpath-rg"
 ACR_NAME="ca7fdbb90831acr"
 CONTAINER_APP="buildpath-backend"
 
-# 2. Create the Microsoft Entra App Registration
+# 2. Create Microsoft Entra App Registration & Service Principal
 APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
 az ad sp create --id "$APP_ID"
 
-# 3. Create Federated Credential for the 'main' branch
+# 3. Create Federated Credential for GitHub Actions (main branch)
 az ad app federated-credential create \
   --id "$APP_ID" \
   --parameters "{\"name\":\"github-main-branch\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"repo:${REPO}:ref:refs/heads/main\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
 
-# 4. Grant AcrPush role on the Azure Container Registry
+# 4. Grant AcrPush role strictly on the Azure Container Registry
 ACR_ID=$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
 az role assignment create \
   --assignee "$APP_ID" \
   --role "AcrPush" \
   --scope "$ACR_ID"
 
-# 5. Grant Contributor role on the Container App resource
+# 5. Grant narrow Container Apps Contributor role strictly on the Container App resource
 CONTAINER_APP_ID=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
 az role assignment create \
   --assignee "$APP_ID" \
-  --role "Contributor" \
+  --role "Container Apps Contributor" \
   --scope "$CONTAINER_APP_ID"
 
-# 6. Print values for GitHub Secrets
+# 6. Output values for GitHub Secrets
 echo "AZURE_CLIENT_ID: $APP_ID"
 echo "AZURE_TENANT_ID: $(az account show --query tenantId -o tsv)"
 echo "AZURE_SUBSCRIPTION_ID: $SUBSCRIPTION_ID"
@@ -115,7 +121,7 @@ This updates **strictly the container image**. All existing Azure Container App 
 Because every release image is tagged with an immutable Git commit SHA:
 
 ### Finding Deployed Images
-To inspect all past image tags stored in the registry:
+To inspect past image tags stored in the registry:
 ```bash
 az acr repository show-tags --name ca7fdbb90831acr --repository buildpath-backend --output table
 ```
@@ -126,12 +132,12 @@ az containerapp show --name buildpath-backend --resource-group buildpath-rg --qu
 ```
 
 ### Executing a Manual Rollback
-To immediately revert production to any prior known-good Git commit SHA or version tag:
+To immediately revert production to any prior known-good Git commit SHA:
 ```bash
 az containerapp update \
   --name buildpath-backend \
   --resource-group buildpath-rg \
-  --image ca7fdbb90831acr.azurecr.io/buildpath-backend:<previous-git-sha-or-tag>
+  --image ca7fdbb90831acr.azurecr.io/buildpath-backend:<previous-git-sha>
 ```
 
 ---
@@ -146,4 +152,4 @@ git commit -m "feat: your feature"
 git push origin main
 ```
 
-GitHub Actions will automatically run tests, build the container image, tag it with the commit SHA, push it to ACR, update the Azure Container App, and verify health check at `/health`.
+GitHub Actions will automatically validate syntax, build the container image, tag it with the commit SHA, push it to ACR, update the Azure Container App, and verify health check at `/health`.
